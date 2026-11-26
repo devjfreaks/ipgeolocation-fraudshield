@@ -12,20 +12,20 @@ class IPGEOFS_Checker {
     public function store_ip_early( WC_Order $order ) {
         $ip = $order->get_customer_ip_address();
         if ( $ip ) {
-            update_post_meta( $order->get_id(), '_fraudshield_captured_ip', sanitize_text_field( $ip ) );
+            IPGEOFS_Order_Meta::update( $order, [ '_fraudshield_captured_ip' => sanitize_text_field( $ip ) ] );
         }
     }
     public function check_on_status_change( int $order_id, string $old, string $new ) {
         if ( ! in_array( $new, [ 'processing', 'on-hold' ], true ) ) return;
-        if ( get_post_meta( $order_id, '_fraudshield_checked', true ) ) return;
         $order = wc_get_order( $order_id );
-        if ( $order ) $this->run_check( $order );
+        if ( ! $order || IPGEOFS_Order_Meta::get( $order, '_fraudshield_checked' ) ) return;
+        $this->run_check( $order );
     }
 
     public function check_order_by_id( int $order_id ) {
-        if ( get_post_meta( $order_id, '_fraudshield_checked', true ) ) return;
         $order = wc_get_order( $order_id );
-        if ( $order ) $this->run_check( $order );
+        if ( ! $order || IPGEOFS_Order_Meta::get( $order, '_fraudshield_checked' ) ) return;
+        $this->run_check( $order );
     }
 
     public function handle_manual_recheck() {
@@ -35,12 +35,12 @@ class IPGEOFS_Checker {
 
         $order = wc_get_order( $order_id );
         if ( $order ) {
-            delete_post_meta( $order_id, '_fraudshield_checked' );
+            IPGEOFS_Order_Meta::delete( $order, [ '_fraudshield_checked' ] );
             $this->run_check( $order );
         }
         $order = wc_get_order( $order_id );
         $redirect = $order ? $order->get_edit_order_url() : admin_url( 'admin.php?page=wc-orders' );
-        wp_redirect( add_query_arg( 'ipgeofs_rechecked', '1', $redirect ) );
+        wp_safe_redirect( add_query_arg( 'ipgeofs_rechecked', '1', $redirect ) );
         exit;
     }
 
@@ -51,12 +51,12 @@ class IPGEOFS_Checker {
         if ( $test_mode ) {
             $ip = sanitize_text_field( get_option( 'ipgeofs_test_ip', '8.8.8.8' ) );
         } else {
-            $ip = get_post_meta( $order_id, '_fraudshield_captured_ip', true )
+            $ip = IPGEOFS_Order_Meta::get( $order, '_fraudshield_captured_ip' )
                 ?: $order->get_customer_ip_address();
         }
 
         if ( ! $ip ) {
-            $this->mark_skipped( $order_id, 'No IP address on order.' );
+            $this->mark_skipped( $order, 'No IP address on order.' );
             return;
         }
 
@@ -67,14 +67,14 @@ class IPGEOFS_Checker {
             $message = $api_response->get_error_message();
 
             if ( $code === 'private_ip' ) {
-                error_log( '[FraudShield] Order #' . $order_id . ': private/local IP skipped.' );
-                $this->mark_skipped( $order_id, 'Local/private IP skipped.' );
+                $this->log_event( 'info', 'Order #' . $order_id . ': private/local IP skipped.' );
+                $this->mark_skipped( $order, 'Local/private IP skipped.' );
                 return;
             }
 
             if ( $code === 'no_api_key' ) {
-                error_log( '[FraudShield] Order #' . $order_id . ': no API key configured, fraud check skipped.' );
-                $this->mark_skipped( $order_id, 'No API key configured.' );
+                $this->log_event( 'warning', 'Order #' . $order_id . ': no API key configured, fraud check skipped.' );
+                $this->mark_skipped( $order, 'No API key configured.' );
                 $order->add_order_note(
                     __( 'FraudShield: Fraud check skipped, no API key configured. Go to FraudShield Settings to add your key.', 'ipgeolocation-fraudshield' ),
                     false
@@ -82,9 +82,10 @@ class IPGEOFS_Checker {
                 return;
             }
 
-            error_log( '[FraudShield] Order #' . $order_id . ': API error, ' . $message );
-            $this->mark_skipped( $order_id, $message );
+            $this->log_event( 'error', 'Order #' . $order_id . ': API error, ' . $message );
+            $this->mark_skipped( $order, $message );
             $order->add_order_note(
+                /* translators: %s: error message from the IP lookup. */
                 sprintf( __( 'FraudShield: Fraud check failed, %s', 'ipgeolocation-fraudshield' ), $message ),
                 false
             );
@@ -95,16 +96,18 @@ class IPGEOFS_Checker {
         $scorer          = new IPGEOFS_Scorer( $api_response, $billing_country );
         $result          = $scorer->score();
 
-        update_post_meta( $order_id, '_fraudshield_checked',    true );
-        update_post_meta( $order_id, '_fraudshield_score',      $result['score'] );
-        update_post_meta( $order_id, '_fraudshield_tier',       $result['tier'] );
-        update_post_meta( $order_id, '_fraudshield_signals',    wp_json_encode( $result['signals'] ) );
-        update_post_meta( $order_id, '_fraudshield_ip_country', $result['ip_country'] );
-        update_post_meta( $order_id, '_fraudshield_ip',         $ip );
-
+        $meta = [
+            '_fraudshield_checked'    => '1',
+            '_fraudshield_score'      => $result['score'],
+            '_fraudshield_tier'       => $result['tier'],
+            '_fraudshield_signals'    => wp_json_encode( $result['signals'] ),
+            '_fraudshield_ip_country' => $result['ip_country'],
+            '_fraudshield_ip'         => $ip,
+        ];
         if ( $test_mode ) {
-            update_post_meta( $order_id, '_ipgeofs_test_mode', true );
+            $meta['_ipgeofs_test_mode'] = '1';
         }
+        IPGEOFS_Order_Meta::update( $order, $meta );
 
         $this->log( $order_id, $ip, $billing_country, $result, $api_response );
         $this->act( $order, $result );
@@ -194,6 +197,7 @@ class IPGEOFS_Checker {
     private function log( int $order_id, string $ip, string $billing_country, array $result, array $raw ) {
         if ( get_option( 'ipgeofs_log_all', 'yes' ) !== 'yes' && $result['tier'] === 'low' ) return;
         global $wpdb;
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Writes to the plugin's own log table; there is no WordPress API for it.
         $wpdb->insert( $wpdb->prefix . 'fraudshield_logs', [
             'order_id'        => $order_id,
             'ip_address'      => $ip,
@@ -206,8 +210,19 @@ class IPGEOFS_Checker {
         ], [ '%d','%s','%s','%s','%d','%s','%s','%s' ] );
     }
 
-    private function mark_skipped( int $order_id, string $reason ) {
-        update_post_meta( $order_id, '_fraudshield_checked', false );
-        update_post_meta( $order_id, '_fraudshield_skip_reason', $reason );
+    private function mark_skipped( WC_Order $order, string $reason ) {
+        IPGEOFS_Order_Meta::update( $order, [
+            '_fraudshield_checked'     => '0',
+            '_fraudshield_skip_reason' => $reason,
+        ] );
+    }
+
+    /**
+     * Writes to the WooCommerce log (WooCommerce > Status > Logs, source "fraudshield").
+     */
+    private function log_event( string $level, string $message ) {
+        if ( function_exists( 'wc_get_logger' ) ) {
+            wc_get_logger()->log( $level, $message, [ 'source' => 'fraudshield' ] );
+        }
     }
 }

@@ -13,7 +13,7 @@ class IPGEOFS_Mailer {
             $test_mode ? ' TEST' : '', $tier, $score, $order_id );
 
         $tier_color = [ 'HIGH' => '#f43f5e', 'MEDIUM' => '#f59e0b', 'LOW' => '#22d3a0' ][ $tier ] ?? '#888';
-        $order_url  = admin_url( 'post.php?post=' . $order_id . '&action=edit' );
+        $order_url  = $order->get_edit_order_url();
 
         $signal_rows = '';
         foreach ( $result['signals'] as $sig ) {

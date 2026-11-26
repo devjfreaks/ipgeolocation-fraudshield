@@ -11,14 +11,9 @@ class IPGEOFS_Core {
     }
 
     private function __construct() {
-        add_action( 'init', [ $this, 'load_textdomain' ] );
+        // Translations are loaded by WordPress itself for plugins hosted on WordPress.org.
         $this->migrate_legacy_options();
         $this->init_hooks();
-    }
-
-    public function load_textdomain() {
-        load_plugin_textdomain( 'ipgeolocation-fraudshield', false,
-            dirname( plugin_basename( IPGEOFS_PLUGIN_FILE ) ) . '/languages' );
     }
 
     private function migrate_legacy_options() {
@@ -91,6 +86,33 @@ class IPGEOFS_Core {
 
         add_action( 'wp_ajax_ipgeofs_test_api',    [ $this, 'ajax_test_api' ] );
         add_action( 'wp_ajax_ipgeofs_get_stats',   [ $this, 'ajax_get_stats' ] );
+
+        // Upgrades run on init: Action Scheduler is not ready earlier.
+        add_action( 'init', [ $this, 'maybe_upgrade' ], 20 );
+        add_action( 'ipgeofs_migrate_order_meta', [ $this, 'run_order_meta_migration' ] );
+    }
+
+    /**
+     * Activation hooks don't run on plugin updates, so compare the stored version instead.
+     */
+    public function maybe_upgrade() {
+        if ( get_option( 'ipgeofs_db_version' ) === IPGEOFS_VERSION ) return;
+        update_option( 'ipgeofs_db_version', IPGEOFS_VERSION );
+        self::schedule_order_meta_migration( 0 );
+    }
+
+    private static function schedule_order_meta_migration( int $after ) {
+        if ( ! function_exists( 'as_enqueue_async_action' ) ) return;
+        if ( function_exists( 'as_has_scheduled_action' ) && as_has_scheduled_action( 'ipgeofs_migrate_order_meta', [ $after ], 'fraudshield' ) ) return;
+        as_enqueue_async_action( 'ipgeofs_migrate_order_meta', [ $after ], 'fraudshield' );
+    }
+
+    /**
+     * Background job: moves one batch of 1.0.0 order data, then queues the next batch if needed.
+     */
+    public function run_order_meta_migration( $after = 0 ) {
+        $last = IPGEOFS_Order_Meta::migrate_legacy_batch( (int) $after );
+        if ( $last > 0 ) self::schedule_order_meta_migration( $last );
     }
 
 
@@ -107,12 +129,13 @@ class IPGEOFS_Core {
     }
 
     public function render_meta_box( $post_or_order ) {
-        $order_id = is_a( $post_or_order, 'WC_Order' ) ? $post_or_order->get_id() : $post_or_order->ID;
-        $score    = (int) get_post_meta( $order_id, '_fraudshield_score', true );
-        $tier     = get_post_meta( $order_id, '_fraudshield_tier', true );
-        $signals  = get_post_meta( $order_id, '_fraudshield_signals', true );
-        $checked  = get_post_meta( $order_id, '_fraudshield_checked', true );
-        $ip       = get_post_meta( $order_id, '_fraudshield_ip', true );
+        $order    = is_a( $post_or_order, 'WC_Order' ) ? $post_or_order : wc_get_order( $post_or_order->ID );
+        if ( ! $order ) return;
+        $order_id = $order->get_id();
+        $score    = (int) IPGEOFS_Order_Meta::get( $order, '_fraudshield_score' );
+        $tier     = IPGEOFS_Order_Meta::get( $order, '_fraudshield_tier' );
+        $signals  = IPGEOFS_Order_Meta::get( $order, '_fraudshield_signals' );
+        $checked  = IPGEOFS_Order_Meta::get( $order, '_fraudshield_checked' );
 
         if ( ! $checked ) {
             echo '<div style="padding:8px 0;">';
@@ -190,9 +213,8 @@ class IPGEOFS_Core {
 
     public function render_order_column( $column, $post_id_or_order ) {
         if ( $column !== 'fraudshield_risk' ) return;
-        $order_id = is_a( $post_id_or_order, 'WC_Order' ) ? $post_id_or_order->get_id() : $post_id_or_order;
-        $tier  = get_post_meta( $order_id, '_fraudshield_tier', true );
-        $score = get_post_meta( $order_id, '_fraudshield_score', true );
+        $tier  = IPGEOFS_Order_Meta::get( $post_id_or_order, '_fraudshield_tier' );
+        $score = IPGEOFS_Order_Meta::get( $post_id_or_order, '_fraudshield_score' );
 
         if ( ! $tier ) { echo '<span style="color:#ddd;">&nbsp;</span>'; return; }
         $c = [ 'low' => [ '#22d3a022','#22d3a0' ], 'medium' => [ '#f59e0b22','#f59e0b' ], 'high' => [ '#f43f5e22','#f43f5e' ] ][ $tier ] ?? [ '#f0f0f0','#999' ];
@@ -205,7 +227,7 @@ class IPGEOFS_Core {
         check_ajax_referer( 'ipgeofs_admin_nonce', 'nonce' );
         if ( ! current_user_can( 'manage_options' ) ) wp_send_json_error( 'Forbidden' );
 
-        $api_key = sanitize_text_field( $_POST['api_key'] ?? '' );
+        $api_key = sanitize_text_field( wp_unslash( $_POST['api_key'] ?? '' ) );
         $test_ip = '8.8.8.8'; // Google DNS
 
         $url = add_query_arg( [ 'apiKey' => $api_key, 'ip' => $test_ip, 'fields' => 'location.country_code2,security.is_vpn' ], IPGEOFS_API_BASE );
@@ -231,8 +253,11 @@ class IPGEOFS_Core {
 
         global $wpdb;
         $table = $wpdb->prefix . 'fraudshield_logs';
-        $days  = (int) ( $_POST['days'] ?? 30 );
+        $days  = min( 365, max( 1, absint( wp_unslash( $_POST['days'] ?? 30 ) ) ) );
 
+        // The plugin's own log table: no WordPress API exists for it, the table name is the fixed
+        // prefix + 'fraudshield_logs', every value goes through prepare(), and stats must be live.
+        // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter
         $rows = $wpdb->get_results( $wpdb->prepare(
             "SELECT DATE(created_at) as day, risk_tier, COUNT(*) as cnt
              FROM {$table}
@@ -251,6 +276,7 @@ class IPGEOFS_Core {
              FROM {$table}
              WHERE created_at >= DATE_SUB(NOW(), INTERVAL %d DAY)", $days
         ) );
+        // phpcs:enable
 
         wp_send_json_success( [ 'rows' => $rows, 'totals' => $totals ] );
     }

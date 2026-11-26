@@ -19,8 +19,12 @@ class IPGEOFS_Admin {
             'manage_woocommerce', 'ipgeolocation-fraudshield', [ $this, 'render_page' ] );
         add_submenu_page( 'ipgeolocation-fraudshield', __( 'Fraud Logs', 'ipgeolocation-fraudshield' ), __( 'Fraud Logs', 'ipgeolocation-fraudshield' ),
             'manage_woocommerce', 'ipgeolocation-fraudshield-logs', [ $this, 'render_logs_page' ] );
-        add_submenu_page( 'ipgeolocation-fraudshield', __( 'Settings', 'ipgeolocation-fraudshield' ), __( 'Settings', 'ipgeolocation-fraudshield' ),
+        $settings_hook = add_submenu_page( 'ipgeolocation-fraudshield', __( 'Settings', 'ipgeolocation-fraudshield' ), __( 'Settings', 'ipgeolocation-fraudshield' ),
             'manage_options', 'ipgeolocation-fraudshield-settings', [ $this, 'render_settings_page' ] );
+        if ( $settings_hook ) {
+            // Runs before any output, so the save can redirect back to the page.
+            add_action( 'load-' . $settings_hook, [ $this, 'handle_settings_save' ] );
+        }
     }
 
     public function register_settings() {
@@ -93,6 +97,8 @@ class IPGEOFS_Admin {
 
         $table = $wpdb->prefix . 'fraudshield_logs';
 
+        // Plugin-owned log table with a fixed name and no user input; counts must be live.
+        // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter
         $totals = $wpdb->get_row(
             "SELECT
                 SUM(risk_tier='high') as high,
@@ -100,6 +106,7 @@ class IPGEOFS_Admin {
                 SUM(risk_tier='low') as low
             FROM {$table}"
         );
+        // phpcs:enable
 
         wp_localize_script( 'ipgeofs-admin', 'ipgeofsAdmin', [
             'nonce'    => wp_create_nonce( 'ipgeofs_admin_nonce' ),
@@ -125,6 +132,7 @@ class IPGEOFS_Admin {
         $screen = get_current_screen();
         if ( ! $screen ) return;
         echo '<div class="notice notice-warning is-dismissible"><p>' .
+            /* translators: %s: URL of the FraudShield settings page. */
             wp_kses_post( sprintf( __( '🛡 <strong>FraudShield</strong> is installed but needs an API key. <a href="%s">Configure now →</a>', 'ipgeolocation-fraudshield' ),
                 esc_url( admin_url( 'admin.php?page=ipgeolocation-fraudshield-settings' ) ) ) ) .
             '</p></div>';
@@ -143,6 +151,7 @@ class IPGEOFS_Admin {
     public function render_dashboard_widget() {
         global $wpdb;
         $table  = $wpdb->prefix . 'fraudshield_logs';
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter -- Plugin-owned log table with a fixed name and no user input.
         $counts = $wpdb->get_row( "SELECT SUM(risk_tier='low') as low, SUM(risk_tier='medium') as med, SUM(risk_tier='high') as high, COUNT(*) as total FROM {$table} WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)" );
         ?>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
@@ -154,7 +163,10 @@ class IPGEOFS_Admin {
             <?php endforeach; ?>
         </div>
         <p style="font-size:12px;color:#999;margin:0;">
-            <?php printf( esc_html__( '%d orders analysed in the last 7 days', 'ipgeolocation-fraudshield' ), (int)$counts->total ); ?>
+            <?php
+            /* translators: %d: number of orders checked in the last 7 days. */
+            printf( esc_html__( '%d orders analysed in the last 7 days', 'ipgeolocation-fraudshield' ), (int)$counts->total );
+            ?>
             <a href="<?php echo esc_url(admin_url('admin.php?page=ipgeolocation-fraudshield-logs')); ?>" style="float:right;">View logs →</a>
         </p>
         <?php
@@ -164,8 +176,11 @@ class IPGEOFS_Admin {
     public function render_page() {
         global $wpdb;
         $table  = $wpdb->prefix . 'fraudshield_logs';
+        // Plugin-owned log table with a fixed name and no user input; the dashboard must be live.
+        // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter
         $totals = $wpdb->get_row( "SELECT COUNT(*) as total, SUM(risk_tier='high') as high, SUM(risk_tier='medium') as med, SUM(risk_tier='low') as low, ROUND(AVG(risk_score),1) as avg FROM {$table}" );
         $recent = $wpdb->get_results( "SELECT l.*, l.order_id FROM {$table} l ORDER BY created_at DESC LIMIT 10" );
+        // phpcs:enable
         ?>
         <div class="wrap fs-wrap">
         <?php $this->render_header( __('Dashboard','ipgeolocation-fraudshield') ); ?>
@@ -225,18 +240,25 @@ class IPGEOFS_Admin {
         global $wpdb;
         $table  = $wpdb->prefix . 'fraudshield_logs';
         $per_page    = 25;
-        $current     = max( 1, (int)( $_GET['paged'] ?? 1 ) );
+        // Read-only list filters from the URL: nothing is changed, so no nonce is needed.
+        // phpcs:disable WordPress.Security.NonceVerification.Recommended
+        $current     = max( 1, absint( wp_unslash( $_GET['paged'] ?? 1 ) ) );
+        $tier_filter = sanitize_key( wp_unslash( $_GET['tier'] ?? '' ) );
+        $search      = sanitize_text_field( wp_unslash( $_GET['s'] ?? '' ) );
+        // phpcs:enable
+        if ( ! in_array( $tier_filter, [ 'high', 'medium', 'low' ], true ) ) $tier_filter = '';
         $offset      = ( $current - 1 ) * $per_page;
-        $tier_filter = sanitize_text_field( $_GET['tier'] ?? '' );
-        $search      = sanitize_text_field( $_GET['s'] ?? '' );
 
         $where_parts = [];
         if ( $tier_filter ) $where_parts[] = $wpdb->prepare( 'risk_tier = %s', $tier_filter );
         if ( $search )      $where_parts[] = $wpdb->prepare( '(ip_address LIKE %s OR order_id = %d)', '%' . $wpdb->esc_like($search) . '%', (int)$search );
         $where = $where_parts ? 'WHERE ' . implode( ' AND ', $where_parts ) : '';
 
+        // Plugin-owned log table with a fixed name. $where is built only from prepare() fragments above.
+        // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQL.NotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter
         $total = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table} {$where}" );
         $logs  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} {$where} ORDER BY created_at DESC LIMIT %d OFFSET %d", $per_page, $offset ) );
+        // phpcs:enable
         ?>
         <div class="wrap fs-wrap">
         <?php $this->render_header( __('Fraud Logs','ipgeolocation-fraudshield') ); ?>
@@ -277,7 +299,7 @@ class IPGEOFS_Admin {
                 <?php else: foreach ( $logs as $log ):
                     $signals  = json_decode($log->signals, true) ?? [];
                     $flagged  = array_values(array_filter($signals, fn($s) => $s['flagged']));
-                    $order_url = admin_url('post.php?post='.$log->order_id.'&action=edit');
+                    $order_url = IPGEOFS_Order_Meta::edit_url( (int) $log->order_id );
                     $tier_cls  = 'fs-pill fs-pill--' . $log->risk_tier;
                 ?>
                     <tr class="fs-log-row fs-log-row--<?php echo esc_attr($log->risk_tier); ?>">
@@ -315,9 +337,8 @@ class IPGEOFS_Admin {
     public function render_settings_page() {
         if ( ! current_user_can('manage_options') ) return;
 
-        if ( isset($_POST['ipgeofs_api_key']) ) {
-            check_admin_referer('ipgeofs_save_settings');
-            $this->save_settings();
+        // Set by handle_settings_save() after a successful save; only shows a message.
+        if ( isset( $_GET['settings-updated'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
             echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__('Settings saved.','ipgeolocation-fraudshield') . '</p></div>';
         }
 
@@ -358,7 +379,10 @@ class IPGEOFS_Admin {
                                 <button type="button" id="fs-test-api-btn" class="fs-btn fs-btn--outline"><?php esc_html_e('Test key','ipgeolocation-fraudshield'); ?></button>
                             </div>
                             <div id="fs-api-test-result" class="fs-api-test-result" style="display:none;"></div>
-                            <p class="fs-hint"><?php printf( esc_html__('Get your free key at %s, free tier includes 1,000 requests/day.','ipgeolocation-fraudshield'), '<a href="https://ipgeolocation.io" target="_blank">ipgeolocation.io</a>'); ?></p>
+                            <p class="fs-hint"><?php
+                            /* translators: %s: link to ipgeolocation.io. */
+                            printf( esc_html__('Get your free key at %s, free tier includes 1,000 requests/day.','ipgeolocation-fraudshield'), '<a href="https://ipgeolocation.io" target="_blank">ipgeolocation.io</a>');
+                            ?></p>
                         </div>
                     </div>
                 </div>
@@ -655,7 +679,17 @@ The final score is calculated proportionally. Higher weight = more impact on the
         <?php
     }
 
-    private function save_settings() {
+    /**
+     * Saves the settings form. Hooked to the settings page's load action, so it runs before
+     * any output and can redirect back (the page then shows the saved values and notices).
+     */
+    public function handle_settings_save() {
+        if ( ! isset( $_POST['ipgeofs_api_key'] ) ) return;
+        check_admin_referer( 'ipgeofs_save_settings' );
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( esc_html__( 'You are not allowed to change these settings.', 'ipgeolocation-fraudshield' ), 403 );
+        }
+
         $bool_fields = [
             'ipgeofs_enabled',
             'ipgeofs_block_vpn',
@@ -682,9 +716,13 @@ The final score is calculated proportionally. Higher weight = more impact on the
         ];
         foreach ( $bool_fields as $f ) update_option( $f, isset($_POST[$f]) ? 'yes' : 'no' );
 
-        $text_fields = ['ipgeofs_api_key','ipgeofs_alert_email','ipgeofs_high_risk_action','ipgeofs_test_ip'];
+        $text_fields = ['ipgeofs_api_key','ipgeofs_alert_email','ipgeofs_test_ip'];
         foreach ( $text_fields as $f ) {
-            if ( isset($_POST[$f]) ) update_option( $f, sanitize_text_field($_POST[$f]) );
+            if ( isset($_POST[$f]) ) update_option( $f, sanitize_text_field( wp_unslash( $_POST[$f] ) ) );
+        }
+        if ( isset( $_POST['ipgeofs_high_risk_action'] ) ) {
+            $action = sanitize_key( wp_unslash( $_POST['ipgeofs_high_risk_action'] ) );
+            if ( in_array( $action, [ 'hold', 'cancel', 'flag' ], true ) ) update_option( 'ipgeofs_high_risk_action', $action );
         }
         $weight_fields = [
             'ipgeofs_weight_country_mismatch',
@@ -705,10 +743,15 @@ The final score is calculated proportionally. Higher weight = more impact on the
         update_option( 'ipgeofs_auto_hold_score',   absint($_POST['ipgeofs_auto_hold_score'] ?? 71) );
         update_option( 'ipgeofs_email_alert_score', absint($_POST['ipgeofs_email_alert_score'] ?? 41) );
         update_option( 'ipgeofs_log_retention_days', absint( $_POST['ipgeofs_log_retention_days'] ?? 30 ) );
+
+        wp_safe_redirect( add_query_arg( 'settings-updated', 'true', admin_url( 'admin.php?page=ipgeolocation-fraudshield-settings' ) ) );
+        exit;
     }
 
 
     private function render_header( string $page_title ) {
+        global $plugin_page; // Current admin page slug, set by WordPress.
+        $current_page = (string) $plugin_page;
         $api_set = (bool) get_option('ipgeofs_api_key');
         $enabled = get_option('ipgeofs_enabled') === 'yes';
         $test_on = get_option('ipgeofs_test_mode') === 'yes';
@@ -731,7 +774,7 @@ The final score is calculated proportionally. Higher weight = more impact on the
                         'ipgeolocation-fraudshield-logs'     => __('Logs','ipgeolocation-fraudshield'),
                         'ipgeolocation-fraudshield-settings' => __('Settings','ipgeolocation-fraudshield'),
                     ] as $page => $label):
-                        $active = ($_GET['page'] ?? '') === $page ? 'fs-nav-tab fs-nav-tab--active' : 'fs-nav-tab';
+                        $active = $current_page === $page ? 'fs-nav-tab fs-nav-tab--active' : 'fs-nav-tab';
                     ?>
                     <a href="<?php echo esc_url(admin_url('admin.php?page='.$page)); ?>" class="<?php echo esc_attr($active); ?>"><?php echo esc_html($label); ?></a>
                     <?php endforeach; ?>
@@ -747,7 +790,7 @@ The final score is calculated proportionally. Higher weight = more impact on the
         echo '<thead><tr><th>' . esc_html__('Order','ipgeolocation-fraudshield') . '</th><th>' . esc_html__('Score','ipgeolocation-fraudshield') . '</th><th>' . esc_html__('IP','ipgeolocation-fraudshield') . '</th><th>' . esc_html__('Countries','ipgeolocation-fraudshield') . '</th><th>' . esc_html__('Date','ipgeolocation-fraudshield') . '</th></tr></thead><tbody>';
         foreach ( $logs as $log ) {
             $tier_cls = 'fs-pill fs-pill--' . $log->risk_tier;
-            $order_url = admin_url('post.php?post='.$log->order_id.'&action=edit');
+            $order_url = IPGEOFS_Order_Meta::edit_url( (int) $log->order_id );
             echo '<tr>';
             echo '<td><a href="' . esc_url($order_url) . '" class="fs-order-link">#' . (int)$log->order_id . '</a></td>';
             echo '<td><span class="' . esc_attr($tier_cls) . '">' . (int)$log->risk_score . ' ' . esc_html(strtoupper($log->risk_tier)) . '</span></td>';
