@@ -2,11 +2,11 @@
 Contributors: ipgeolocation
 Tags: woocommerce, fraud detection, fake orders, ip geolocation
 Requires at least: 5.8
-Tested up to:   7.1
-Stable tag: 1.0.0
+Tested up to:   7.2
+Stable tag: 1.0.1
 Requires PHP: 7.4
 WC requires at least: 6.0
-WC tested up to:   9.4
+WC tested up to:   11.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -74,7 +74,7 @@ An API key from ipgeolocation.io is required to use this plugin. A free plan is 
 
 == Development ==
 
-Development takes place on GitHub: https://github.com/devjfreaks/fraudshield
+Development takes place on GitHub: https://github.com/devjfreaks/ipgeolocation-fraudshield
 
 == Installation ==
 
@@ -128,10 +128,23 @@ License URI: https://github.com/chartjs/Chart.js/blob/master/LICENSE.md
 
 == Changelog ==
 
+= 1.0.1 =
+* Tested with WordPress 7.2 and WooCommerce 11.3.
+* Fix: fraud results are now saved on the order the way WooCommerce expects with High-Performance Order Storage (HPOS).
+* Fix: results saved by 1.0.0 on HPOS stores are moved onto their orders in the background after updating. Before, turning on WooCommerce's compatibility mode or switching order storage could erase them.
+* Order links in the dashboard, logs and alert emails now go straight to the order screen, without a redirect, when HPOS is on.
+* Fix: after saving settings, the "needs an API key" notice no longer shows until the next page load.
+* Skipped checks and API errors are now written to the WooCommerce log (WooCommerce > Status > Logs, source "fraudshield") instead of the PHP error log.
+* Stricter checks on settings and log filter input.
+* Translator notes for all text with placeholders.
+
 = 1.0.0 =
 * Initial release
 
 == Upgrade Notice ==
+
+= 1.0.1 =
+Tested with WordPress 7.2 and WooCommerce 11.3. Fixes saving fraud results on stores that use WooCommerce's High-Performance Order Storage.
 
 = 1.0.0 =
 Initial release

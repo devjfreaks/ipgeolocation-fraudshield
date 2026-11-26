@@ -3,23 +3,22 @@
  * Plugin Name:       IPGeolocation FraudShield
  * Plugin URI:        https://ipgeolocation.io/tutorials/woocommerce-fraud-prevention-setup-guide-for-fraudshield
  * Description:       Real-time fraud detection for WooCommerce. Flags suspicious orders by analysing IP location, VPN/proxy usage, threat scores, and more.
- * Version:           1.0.0
+ * Version:           1.0.1
  * Author:            IPGeolocation.io
  * Author URI:        https://ipgeolocation.io
  * License:           GPLv2 or later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain:       ipgeolocation-fraudshield
- * Domain Path:       /languages
  * Requires at least: 5.8
  * Requires PHP:      7.4
  * WC requires at least: 6.0
- * WC tested up to:   9.4
+ * WC tested up to:   11.3
  */
 
 defined( 'ABSPATH' ) || exit;
 
 
-define( 'IPGEOFS_VERSION',     '1.0.0' );
+define( 'IPGEOFS_VERSION',     '1.0.1' );
 define( 'IPGEOFS_PLUGIN_FILE', __FILE__ );
 define( 'IPGEOFS_PLUGIN_DIR',  plugin_dir_path( __FILE__ ) );
 define( 'IPGEOFS_PLUGIN_URL',  plugin_dir_url( __FILE__ ) );

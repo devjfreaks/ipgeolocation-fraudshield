@@ -115,6 +115,7 @@ class IPGEOFS_Scorer {
             ( $match === false ) && $block,
             $pts,
             sprintf(
+                /* translators: 1: country code of the IP address, 2: billing country code. */
                 __( 'IP in %1$s, billing in %2$s', 'ipgeolocation-fraudshield' ),
                 $ip_country,
                 $this->billing_country
@@ -139,6 +140,7 @@ class IPGEOFS_Scorer {
             __( 'VPN detected', 'ipgeolocation-fraudshield' ),
             $is_vpn && $block,
             $pts,
+            /* translators: %d: VPN confidence score, 0 to 100. */
             sprintf( __( 'Confidence: %d%%', 'ipgeolocation-fraudshield' ), $conf ),
             $enabled
         );
@@ -180,6 +182,7 @@ class IPGEOFS_Scorer {
             __( 'Proxy detected', 'ipgeolocation-fraudshield' ),
             $is_proxy && $block,
             $pts,
+            /* translators: %d: proxy confidence score, 0 to 100. */
             sprintf( __( 'Confidence: %d%%', 'ipgeolocation-fraudshield' ), $conf ),
             $enabled
         );
@@ -282,6 +285,7 @@ class IPGEOFS_Scorer {
             __( 'Cloud/datacenter IP', 'ipgeolocation-fraudshield' ),
             $is_cloud_provider && $block,
             $pts,
+            /* translators: %s: cloud or hosting provider name. */
             sprintf( __( 'Provider: %s', 'ipgeolocation-fraudshield' ), $provider ),
             $enabled
         );

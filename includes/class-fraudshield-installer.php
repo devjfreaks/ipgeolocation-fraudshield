@@ -92,12 +92,15 @@ class IPGEOFS_Installer {
 
     public static function run_cleanup() {
         global $wpdb;
-        $days  = (int) get_option( 'ipgeofs_log_retention_days', 30 );
+        $days  = max( 1, absint( get_option( 'ipgeofs_log_retention_days', 30 ) ) );
         $table = $wpdb->prefix . 'fraudshield_logs';
+        // Plugin-owned log table with a fixed name; the only value goes through prepare().
+        // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, PluginCheck.Security.DirectDB.UnescapedDBParameter
         $wpdb->query( $wpdb->prepare(
             "DELETE FROM {$table} WHERE created_at < DATE_SUB(NOW(), INTERVAL %d DAY)",
             $days
         ) );
+        // phpcs:enable
     }
 
     public static function unschedule_cleanup() {

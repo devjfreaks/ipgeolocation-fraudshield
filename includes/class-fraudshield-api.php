@@ -59,6 +59,7 @@ class IPGEOFS_API {
         if ( $code !== 200 || ! is_array( $data ) ) {
             return new WP_Error(
                 'api_error',
+                /* translators: %d: HTTP status code returned by the API. */
                 sprintf( __( 'FraudShield: API returned HTTP %d.', 'ipgeolocation-fraudshield' ), $code )
             );
         }
